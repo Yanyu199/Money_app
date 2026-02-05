@@ -30,7 +30,7 @@ class MyApp extends StatelessWidget {
   }
 }
 
-// 🔥 排序类型枚举
+// 排序类型枚举
 enum SortType { rate, profit }
 
 class MainScreen extends StatefulWidget {
@@ -46,7 +46,7 @@ class _MainScreenState extends State<MainScreen> {
   List<String> _myWatchlistConfig = [];          
   
   bool _isDescSort = true; // 降序/升序
-  SortType _sortType = SortType.rate; // 🔥 排序模式：按涨幅还是按金额
+  SortType _sortType = SortType.rate; // 排序模式
   
   bool _isLoadingData = true;
   bool _isPrivacyMode = false;
@@ -63,13 +63,20 @@ class _MainScreenState extends State<MainScreen> {
     await _fetchLatestMarket();
   }
 
+  // 🔥🔥🔥 核心修复在这里 🔥🔥🔥
+  // 必须把原来的 h['amount'] 改成 shares * cost_price
   Future<void> _loadMyConfig() async {
     final data = await HttpService.getMyData();
     if (data != null && mounted) {
       final holdings = data['holdings'] as List;
       final watchlist = data['watchlist'] as List;
       setState(() {
-        _myHoldingsConfig = { for (var h in holdings) h['fund_code']: (h['amount'] as num).toDouble() };
+        _myHoldingsConfig = {
+          for (var h in holdings)
+            // 使用 (份额 * 成本) 计算本金，并防止 null 崩溃
+            h['fund_code']: ((h['shares'] as num? ?? 0) * (h['cost_price'] as num? ?? 0)).toDouble()
+        };
+        
         _myWatchlistConfig = watchlist.map<String>((w) => w['fund_code'].toString()).toList();
         _isLoadingData = false;
       });
@@ -109,28 +116,15 @@ class _MainScreenState extends State<MainScreen> {
 
   void _showSettleDialog() {
     showDialog(context: context, builder: (ctx) => AlertDialog(
-      title: const Text("确认更新持仓?"),
-      content: const Text("系统将根据【最新的官方净值/收盘价】自动更新你所有持仓的金额。\n\n⚠️ 建议在每晚 22:00 后或次日早上操作。"),
+      title: const Text("提示"),
+      content: const Text("现在的收益是实时计算的，无需手动结算了。"),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("取消")),
-        ElevatedButton(
-          style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
-          onPressed: () async {
-            Navigator.pop(ctx);
-            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("正在结算中...")));
-            String msg = await HttpService.settleHoldings();
-            if (mounted) {
-               showDialog(context: context, builder: (_) => AlertDialog(title: const Text("结算完成"), content: Text(msg), actions: [TextButton(onPressed: ()=>Navigator.pop(context), child: const Text("好"))]));
-               _onRefresh(); 
-            }
-          },
-          child: const Text("确定结算"),
-        )
+        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("知道了")),
       ],
     ));
   }
 
-  // 🔥 排序弹窗
+  // 排序弹窗
   void _showSortDialog() {
     showModalBottomSheet(context: context, builder: (ctx) => Column(mainAxisSize: MainAxisSize.min, children: [
       const Padding(padding: EdgeInsets.all(16), child: Text("排序方式", style: TextStyle(fontWeight: FontWeight.bold))),
@@ -161,7 +155,6 @@ class _MainScreenState extends State<MainScreen> {
     ]));
   }
 
-  // 🔥 核心排序逻辑更新
   List<FundModel> _getSortedList(List<String> codes) {
     var list = codes.map((c) => _marketData[c]).whereType<FundModel>().toList();
     list.sort((a, b) {
@@ -191,9 +184,8 @@ class _MainScreenState extends State<MainScreen> {
         title: Text(_currentIndex == 0 ? "我的持仓" : "自选关注", style: const TextStyle(fontWeight: FontWeight.bold)),
         leading: IconButton(icon: const Icon(Icons.logout), onPressed: _logout),
         actions: [
-          if (_currentIndex == 0) IconButton(icon: const Icon(Icons.check_circle_outline), tooltip: "一键结算", onPressed: _showSettleDialog),
+           if (_currentIndex == 0) IconButton(icon: const Icon(Icons.info_outline), tooltip: "关于结算", onPressed: _showSettleDialog),
           IconButton(icon: Icon(_isPrivacyMode ? Icons.visibility_off : Icons.visibility), onPressed: () => setState(() => _isPrivacyMode = !_isPrivacyMode)),
-          // 🔥 排序按钮改为弹窗
           IconButton(icon: const Icon(Icons.sort), onPressed: _showSortDialog),
           IconButton(icon: const Icon(Icons.add_circle_outline), onPressed: () => _showAddFundDialog(_currentIndex == 0 ? "holding" : "watchlist")),
         ],
@@ -240,7 +232,6 @@ class _MainScreenState extends State<MainScreen> {
             onDismissed: (d) => _handleDelete(fund.fundCode, "holding"),
             child: GestureDetector(
               onTap: () => _gotoDetail(fund),
-              onLongPress: () => _showEditAmountDialog(fund.fundCode, principal),
               child: _buildFundCard(fund, true, profit, principal),
             ),
           );
@@ -332,25 +323,10 @@ class _MainScreenState extends State<MainScreen> {
     }));
   }
 
-  void _showEditAmountDialog(String code, double current) {
-    String input = current.toString();
-    showDialog(context: context, builder: (ctx) => AlertDialog(
-      title: const Text("修改持仓金额"),
-      content: TextField(decoration: InputDecoration(hintText: "$current"), keyboardType: TextInputType.number, onChanged: (v) => input = v),
-      actions: [
-        ElevatedButton(onPressed: () async {
-          await HttpService.addFundDB(code, "holding", double.tryParse(input) ?? 0);
-          Navigator.pop(ctx);
-          _onRefresh();
-        }, child: const Text("保存")),
-      ],
-    ));
-  }
-
   void _gotoDetail(FundModel fund) => Navigator.push(context, MaterialPageRoute(builder: (_) => DetailScreen(fund: fund)));
 }
 
-// 搜索组件保持不变 (为节省空间省略，因为刚才已经给你了，没变)
+// 搜索组件
 class _SearchDialog extends StatefulWidget {
   final String targetType;
   final VoidCallback onAdded;
@@ -382,15 +358,29 @@ class _SearchDialogState extends State<_SearchDialog> {
           if (_selectedFund == null) SizedBox(height: 200, child: ListView.builder(itemCount: _searchResults.length, itemBuilder: (ctx, i) { final item = _searchResults[i]; return ListTile(title: Text(item['name']), subtitle: Text("${item['code']} - ${item['type']}"), onTap: () => setState(() => _selectedFund = item)); })),
           if (_selectedFund != null) ...[
             Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: Colors.grey[200], borderRadius: BorderRadius.circular(8)), child: Row(children: [Expanded(child: Text("${_selectedFund['name']} (${_selectedFund['code']})", style: const TextStyle(fontWeight: FontWeight.bold))), IconButton(icon: const Icon(Icons.close, size: 16), onPressed: () => setState(() => _selectedFund = null))])),
-            if (isHolding) ...[const SizedBox(height: 10), TextField(controller: _amountController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: "持有金额", prefixIcon: Icon(Icons.attach_money)))]
+            
+            if (isHolding) ...[const SizedBox(height: 10), TextField(controller: _amountController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: "持有金额 (暂不可用)", enabled: false, prefixIcon: Icon(Icons.attach_money)))]
           ]
       ])),
-      actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("取消")), ElevatedButton(onPressed: _selectedFund == null ? null : () async { double amt = isHolding ? (double.tryParse(_amountController.text) ?? 0) : 0; await HttpService.addFundDB(_selectedFund['code'], widget.targetType, amt); widget.onAdded(); }, child: const Text("确定"))],
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text("取消")), 
+        ElevatedButton(
+          onPressed: (_selectedFund == null) ? null : () async { 
+             if (!isHolding) {
+               await HttpService.addFundDB(_selectedFund['code'], widget.targetType, 0); 
+               widget.onAdded();
+             } else {
+               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请等待后续更新添加持仓功能")));
+             }
+          }, 
+          child: const Text("确定")
+        )
+      ],
     );
   }
 }
 
-// 🔥 全新升级的详情页：展示实时重仓股
+// 详情页
 class DetailScreen extends StatefulWidget {
   final FundModel fund;
   const DetailScreen({super.key, required this.fund});
@@ -420,14 +410,9 @@ class _DetailScreenState extends State<DetailScreen> {
         child: SingleChildScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
           child: Column(children: [
-            // 1. 走势图
             Container(color: Colors.white, padding: const EdgeInsets.all(10), child: Image.network("http://j3.dfcfw.com/images/fav/charts/t${widget.fund.fundCode}.png", fit: BoxFit.contain)),
             const SizedBox(height: 10),
-            
-            // 2. 重仓股列表头
             Container(padding: const EdgeInsets.all(16), alignment: Alignment.centerLeft, child: const Text("重仓持股 (实时行情)", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
-            
-            // 3. 股票列表
             if (_isLoading) const Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator())
             else if (stockList == null || stockList.isEmpty) const Padding(padding: EdgeInsets.all(20), child: Text("暂无持仓数据"))
             else ...stockList.map((s) {
@@ -448,7 +433,6 @@ class _DetailScreenState extends State<DetailScreen> {
                 ),
               );
             }).toList(),
-            
             const SizedBox(height: 30),
           ]),
         ),

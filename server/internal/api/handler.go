@@ -1,11 +1,10 @@
 package api
 
 import (
-	"fmt" // 🔥 记得确认导入了 fmt
 	"fund-tracker-server/internal/db"
 	"fund-tracker-server/internal/models"
 	"fund-tracker-server/internal/service"
-	"strconv" // 🔥 记得确认导入了 strconv
+	"sync" // 🔥 引入 sync 包用于并发控制
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -66,8 +65,14 @@ func GetMyData(c *gin.Context) {
 	userID := c.MustGet("user_id").(uint)
 	var holdings []models.Holding
 	var watchlist []models.Watchlist
+
 	db.DB.Where("user_id = ?", userID).Find(&holdings)
 	db.DB.Where("user_id = ?", userID).Find(&watchlist)
+
+	// 这里可以复用 FetchFundData 逻辑来计算实时收益，
+	// 但为了代码简洁，主要逻辑在 RefreshMarketDB 或由前端触发刷新。
+	// 如果需要 GetMyData 也实时，请参考之前的重构逻辑。
+
 	c.JSON(200, gin.H{"holdings": holdings, "watchlist": watchlist})
 }
 
@@ -75,25 +80,42 @@ func GetMyData(c *gin.Context) {
 func AddFundDB(c *gin.Context) {
 	userID := c.MustGet("user_id").(uint)
 	var input struct {
-		Code   string  `json:"code"`
-		Type   string  `json:"type"`
-		Amount float64 `json:"amount"`
+		Code      string  `json:"code"`
+		Type      string  `json:"type"`
+		Shares    float64 `json:"shares"`
+		CostPrice float64 `json:"cost_price"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	if _, err := service.FetchFundData(input.Code); err != nil {
+
+	fundInfo, err := service.FetchFundData(input.Code)
+	if err != nil {
 		c.JSON(400, gin.H{"error": "无效的基金代码"})
 		return
 	}
+
 	if input.Type == "holding" {
 		var holding models.Holding
 		if err := db.DB.Where("user_id = ? AND fund_code = ?", userID, input.Code).First(&holding).Error; err == nil {
-			holding.Amount = input.Amount
+			// 加权平均逻辑
+			totalShares := holding.Shares + input.Shares
+			if totalShares > 0 {
+				totalCost := (holding.Shares * holding.CostPrice) + (input.Shares * input.CostPrice)
+				holding.CostPrice = totalCost / totalShares
+				holding.Shares = totalShares
+			}
+			holding.FundName = fundInfo.Name
 			db.DB.Save(&holding)
 		} else {
-			db.DB.Create(&models.Holding{UserID: userID, FundCode: input.Code, Amount: input.Amount})
+			db.DB.Create(&models.Holding{
+				UserID:    userID,
+				FundCode:  input.Code,
+				FundName:  fundInfo.Name,
+				Shares:    input.Shares,
+				CostPrice: input.CostPrice,
+			})
 		}
 	} else {
 		var count int64
@@ -139,13 +161,17 @@ func SearchFundDB(c *gin.Context) {
 	c.JSON(200, gin.H{"data": results})
 }
 
-// 刷新行情
+// 🔥 优化：刷新行情 (并发控制 + 统一返回)
 func RefreshMarketDB(c *gin.Context) {
 	userID := c.MustGet("user_id").(uint)
 	var holdingCodes []string
 	var watchCodes []string
+
+	// 获取用户关注的所有代码
 	db.DB.Model(&models.Holding{}).Where("user_id = ?", userID).Pluck("fund_code", &holdingCodes)
 	db.DB.Model(&models.Watchlist{}).Where("user_id = ?", userID).Pluck("fund_code", &watchCodes)
+
+	// 去重
 	uniqueMap := make(map[string]bool)
 	for _, code := range holdingCodes {
 		uniqueMap[code] = true
@@ -154,74 +180,46 @@ func RefreshMarketDB(c *gin.Context) {
 		uniqueMap[code] = true
 	}
 
-	var results []interface{}
+	// 准备并发控制
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 5)  // 🔥 限制最大并发数为 5
+	var results []*models.FundInfo // 存储刷新后的数据
+	var mu sync.Mutex              // 保护 results 切片的并发写入
+
 	for code := range uniqueMap {
-		data, err := service.FetchFundData(code)
-		if err == nil {
-			results = append(results, data)
-			go func(uid uint, c string, d *models.FundInfo) {
+		wg.Add(1)
+		sem <- struct{}{} // 获取信号量 (如果满5个则阻塞)
+
+		go func(targetCode string) {
+			defer wg.Done()
+			defer func() { <-sem }() // 释放信号量
+
+			// 获取最新数据
+			data, err := service.FetchFundData(targetCode)
+			if err == nil && data != nil {
+				// 1. 收集结果
+				mu.Lock()
+				results = append(results, data)
+				mu.Unlock()
+
+				// 2. 更新数据库缓存 (LastPrice 等)
+				// 注意：这里仅更新 Holding 表的缓存字段，不影响 shares/cost
 				db.DB.Model(&models.Holding{}).
-					Where("user_id = ? AND fund_code = ?", uid, c).
+					Where("user_id = ? AND fund_code = ?", userID, targetCode).
 					Updates(map[string]interface{}{
-						"fund_name":  d.Name,
-						"last_price": d.GSZ,
-						"change":     d.GSZZL,
+						"fund_name":  data.Name,
+						"last_price": data.GSZ,
+						"change":     data.GSZZL,
 					})
-			}(userID, code, data)
-		}
-	}
-	c.JSON(200, gin.H{"data": results})
-}
-
-// 🔥 新增：一键结算（把收益更新进持仓本金）
-func SettleHoldingsDB(c *gin.Context) {
-	userID := c.MustGet("user_id").(uint)
-
-	// 1. 获取所有持仓
-	var holdings []models.Holding
-	if err := db.DB.Where("user_id = ?", userID).Find(&holdings).Error; err != nil {
-		c.JSON(500, gin.H{"error": "获取持仓失败"})
-		return
-	}
-
-	updatedCount := 0
-	totalDiff := 0.0
-
-	// 2. 遍历每一个基金
-	for _, h := range holdings {
-		// 这里的 FetchFundData 已经包含了“优先取场内/官方确权”的逻辑
-		fundInfo, err := service.FetchFundData(h.FundCode)
-
-		if err == nil && fundInfo != nil {
-			// 解析涨跌幅
-			rateStr := fundInfo.GSZZL
-			rate, _ := strconv.ParseFloat(rateStr, 64)
-
-			// 如果涨跌幅不是 0，就开始结算
-			if rate != 0 {
-				oldAmount := h.Amount
-				// 计算收益： 本金 * (涨跌幅 / 100)
-				profit := oldAmount * (rate / 100.0)
-				newAmount := oldAmount + profit
-
-				// 更新数据库
-				h.Amount = newAmount
-				h.FundName = fundInfo.Name
-				h.LastPrice = fundInfo.GSZ
-				h.Change = fundInfo.GSZZL
-
-				db.DB.Save(&h)
-
-				updatedCount++
-				totalDiff += profit
 			}
-		}
+		}(code)
 	}
 
-	c.JSON(200, gin.H{
-		"success": true,
-		"message": fmt.Sprintf("已结算 %d 支基金\n总资产变动: %+.2f", updatedCount, totalDiff),
-	})
+	// 等待所有任务完成
+	wg.Wait()
+
+	// 🔥 直接返回最新数据列表，前端无需再次调用 GetMyData
+	c.JSON(200, gin.H{"data": results})
 }
 
 // 中间件

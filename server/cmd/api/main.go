@@ -49,7 +49,8 @@ func main() {
 		auth.POST("/delete", api.DeleteFundDB)
 		auth.GET("/refresh_market", api.RefreshMarketDB)
 		auth.GET("/search", api.SearchFundDB)
-		auth.POST("/settle", api.SettleHoldingsDB) // 🔥 新增结算接口
+		// 🔥 已删除: auth.POST("/settle", api.SettleHoldingsDB)
+		// 因为现在逻辑是实时计算收益，不需要手动结算接口了
 	}
 
 	fmt.Println("🚀 服务端已启动: http://localhost:8080")

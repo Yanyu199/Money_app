@@ -6,23 +6,33 @@ import (
 
 // User 用户表
 type User struct {
-	gorm.Model        // 自动包含 ID, CreatedAt, UpdatedAt 等字段
-	Username   string `gorm:"uniqueIndex;not null" json:"username"`
-	Password   string `gorm:"not null" json:"-"` // 密码不通过 JSON 返回给前端
+	gorm.Model
+	Username string `gorm:"uniqueIndex;not null" json:"username"`
+	Password string `gorm:"not null" json:"-"`
 }
 
-// Holding 持仓表 (关联用户)
+// Holding 持仓表
 type Holding struct {
 	gorm.Model
-	UserID    uint    `gorm:"index;not null" json:"user_id"`
-	FundCode  string  `gorm:"not null" json:"fund_code"`
-	Amount    float64 `gorm:"not null" json:"amount"` // 持仓金额
-	FundName  string  `json:"fund_name"`
-	LastPrice string  `json:"last_price"` // 存字符串方便，因为有的是百分比
-	Change    string  `json:"change"`     // 涨跌幅
+	UserID   uint   `gorm:"index;not null" json:"user_id"`
+	FundCode string `gorm:"not null" json:"fund_code"`
+	FundName string `json:"fund_name"`
+
+	// 🔥 修改：增加 ;default:0 以兼容旧数据
+	Shares    float64 `gorm:"not null;default:0" json:"shares"`     // 持有份额
+	CostPrice float64 `gorm:"not null;default:0" json:"cost_price"` // 平均成本单价
+
+	// 缓存字段
+	LastPrice string `json:"last_price"`
+	Change    string `json:"change"`
+
+	// 动态计算字段
+	TotalValue  float64 `gorm:"-" json:"total_value"`
+	TotalReturn float64 `gorm:"-" json:"total_return"`
+	DayReturn   float64 `gorm:"-" json:"day_return"`
 }
 
-// Watchlist 自选表 (关联用户)
+// Watchlist 自选表
 type Watchlist struct {
 	gorm.Model
 	UserID   uint   `gorm:"index;not null" json:"user_id"`

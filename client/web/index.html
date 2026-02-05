@@ -6,7 +6,7 @@
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
   <meta name="description" content="A new Flutter project.">
 
-  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <meta name="apple-mobile-web-app-title" content="莹盈基金">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
@@ -18,16 +18,17 @@
 <body>
   <script src="flutter_bootstrap.js" async></script>
   <script>
-    // 关键修复：强制使用 HTML 渲染器，解决 Edge 白屏问题
+    // 🔥 修复 1: 手动定义 serviceWorkerVersion，防止报错
+    var serviceWorkerVersion = null;
+
     window.addEventListener('load', function(ev) {
-      // Download main.dart.js
       _flutter.loader.loadEntrypoint({
         serviceWorker: {
           serviceWorkerVersion: serviceWorkerVersion,
         },
         onEntrypointLoaded: function(engineInitializer) {
           engineInitializer.initializeEngine({
-            renderer: "html" 
+            renderer: "html" // 强制使用 HTML 渲染器避免白屏
           }).then(function(appRunner) {
             appRunner.runApp();
           });
